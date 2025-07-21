@@ -128,7 +128,7 @@ async function run() {
     });
 
     //  load menus or item
-    app.get("/menus", async (req, res) => {
+    app.get("/menu", async (req, res) => {
       const result = await menuCollection.find().toArray();
       res.send(result);
     });
@@ -150,6 +150,46 @@ async function run() {
     app.post("/cards", async (req, res) => {
       const data = req.body;
       const result = await cardCollection.insertOne(data);
+      res.send(result);
+    });
+
+    // Item post 
+    app.post('/menu', verifyToken, verifyAdmin, async (req, res) => {
+      const data = req.body;
+      const result = await menuCollection.insertOne(data);
+      res.send(result);
+    });
+
+    // menu item delete
+    app.delete('/menu/:id', async (req, res) => {
+      const id = req.params.id;
+      const query = {_id: new ObjectId(id)};
+      const result = await menuCollection.deleteOne(query);
+      res.send(result);
+    });
+
+    // menu item updates
+    app.get('/menu/:id', async (req, res) => {
+      const id = req.params.id;
+      const query = {_id: new ObjectId(id)};
+      const result = await menuCollection.findOne(query);
+      res.send(result);
+    });
+
+    // update item
+    app.patch('/menu/:id', async (req, res) => {
+      const item = req.body;
+      const id = req.params.id;
+      const filter = {_id: new ObjectId(id)};
+      const updateDocs = {
+        $set: {
+          name: item.name,
+          category: item.category,
+          price: item.price,
+          image: item.image
+        }
+      };
+      const result = await menuCollection.updateOne(filter, updateDocs);
       res.send(result);
     });
 
