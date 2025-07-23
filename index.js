@@ -4,6 +4,7 @@ const app = express();
 require("dotenv").config();
 const jwt = require("jsonwebtoken");
 const cors = require("cors");
+const stripe = require("stripe")(process.env.PAYMENT_SECRET_KEY);
 const port = process.env.PORT || 5000;
 
 // midleware
@@ -30,6 +31,7 @@ async function run() {
     const menuCollection = client.db("bistroDB").collection("menu");
     const reviewCollection = client.db("bistroDB").collection("review");
     const cardCollection = client.db("bistroDB").collection("cards");
+    const paymentCollection = client.db("bistroDB").collection("payments");
 
     // JSON WEB-TOKEN SECRET
     app.post("/jwt", async (req, res) => {
@@ -56,20 +58,17 @@ async function run() {
       });
     };
 
-
     // admin verify
-    const verifyAdmin = async(req, res, next) => {
+    const verifyAdmin = async (req, res, next) => {
       const email = req.decoded.email;
-      const query = {email: email};
+      const query = { email: email };
       const user = await userCollection.findOne(query);
       const isAdmin = user?.role === "admin";
-      if(!isAdmin){
-         res.status(403).send({message: 'unauthorize access'});
-      };
+      if (!isAdmin) {
+        return res.status(403).send({ message: "forbidden" });
+      }
       next();
     };
-
-
 
     // user related api
     // create users
@@ -92,22 +91,27 @@ async function run() {
     });
 
     // admin user checking
-    app.get("/users/admin/:email", verifyToken, verifyAdmin, async (req, res) => {
-      const email = req.params.email;
-      if (email !== req.decoded.email) {
-        return res.status(403).send({ message: "unauthorize access" });
+    app.get(
+      "/users/admin/:email",
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        const email = req.params.email;
+        if (email !== req.decoded.email) {
+          return res.status(403).send({ message: "unauthorize access" });
+        }
+        const query = { email: email };
+        const user = await userCollection.findOne(query);
+        let admin = false;
+        if (user) {
+          admin = user?.role === "admin";
+        }
+        res.send({ admin });
       }
-      const query = { email: email };
-      const user = await userCollection.findOne(query);
-      let admin = false;
-      if (user) {
-        admin = user?.role === "admin";
-      }
-      res.send({ admin });
-    });
+    );
 
     // delete users
-    app.delete("/users/:id",verifyToken, verifyAdmin, async (req, res) => {
+    app.delete("/users/:id", verifyToken, verifyAdmin, async (req, res) => {
       const id = req.params.id;
       const query = { _id: new ObjectId(id) };
       const result = await userCollection.deleteOne(query);
@@ -115,17 +119,22 @@ async function run() {
     });
 
     // patch the pacific user to admin
-    app.patch("/users/admin/:id", verifyToken, verifyAdmin, async (req, res) => {
-      const id = req.params.id;
-      const filter = { _id: new ObjectId(id) };
-      const updateDocs = {
-        $set: {
-          role: "admin",
-        },
-      };
-      const result = await userCollection.updateOne(filter, updateDocs);
-      res.send(result);
-    });
+    app.patch(
+      "/users/admin/:id",
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        const id = req.params.id;
+        const filter = { _id: new ObjectId(id) };
+        const updateDocs = {
+          $set: {
+            role: "admin",
+          },
+        };
+        const result = await userCollection.updateOne(filter, updateDocs);
+        res.send(result);
+      }
+    );
 
     //  load menus or item
     app.get("/menu", async (req, res) => {
@@ -153,41 +162,41 @@ async function run() {
       res.send(result);
     });
 
-    // Item post 
-    app.post('/menu', verifyToken, verifyAdmin, async (req, res) => {
+    // Item post
+    app.post("/menu", verifyToken, verifyAdmin, async (req, res) => {
       const data = req.body;
       const result = await menuCollection.insertOne(data);
       res.send(result);
     });
 
     // menu item delete
-    app.delete('/menu/:id', async (req, res) => {
+    app.delete("/menu/:id", async (req, res) => {
       const id = req.params.id;
-      const query = {_id: new ObjectId(id)};
+      const query = { _id: new ObjectId(id) };
       const result = await menuCollection.deleteOne(query);
       res.send(result);
     });
 
     // menu item updates
-    app.get('/menu/:id', async (req, res) => {
+    app.get("/menu/:id", async (req, res) => {
       const id = req.params.id;
-      const query = {_id: new ObjectId(id)};
+      const query = { _id: new ObjectId(id) };
       const result = await menuCollection.findOne(query);
       res.send(result);
     });
 
     // update item
-    app.patch('/menu/:id', async (req, res) => {
+    app.patch("/menu/:id", async (req, res) => {
       const item = req.body;
       const id = req.params.id;
-      const filter = {_id: new ObjectId(id)};
+      const filter = { _id: new ObjectId(id) };
       const updateDocs = {
         $set: {
           name: item.name,
           category: item.category,
           price: item.price,
-          image: item.image
-        }
+          image: item.image,
+        },
       };
       const result = await menuCollection.updateOne(filter, updateDocs);
       res.send(result);
@@ -198,6 +207,68 @@ async function run() {
       const id = req.params.id;
       const result = await cardCollection.deleteOne({ _id: new ObjectId(id) });
       res.send(result);
+    });
+
+    // payment details added database
+ 
+
+    app.post("/payments", async (req, res) => {
+      const payment = req.body;
+
+      // Insert payment info
+      const result = await paymentCollection.insertOne(payment);
+
+      if (payment.cardIds && Array.isArray(payment.cardIds)) {
+        try {
+          const objectIds = payment.cardIds.map((id) => {
+            // যদি id number হয়
+            if (typeof id === "number") {
+              return ObjectId.createFromTime(id);
+            }
+            // যদি id string হয়
+            return new ObjectId(id);
+          });
+
+          const deleteResult = await cardCollection.deleteMany({
+            _id: { $in: objectIds },
+          });
+
+          console.log("paymentInfo", payment);
+          res.send({ result, deleteResult });
+        } catch (err) {
+          console.error("Error converting cardIds to ObjectIds:", err);
+          res.status(400).send({ message: "Invalid cardIds format" });
+        }
+      } else {
+        console.log("paymentInfo", payment);
+        res.send(result);
+      }
+    });
+
+    // payment history get
+    app.get('/payments/:email', verifyToken, async(req, res) => {
+      const query = {email: req.params.email};
+      if(req.params.email !== req.decoded.email){
+        return res.status(403).send({message: 'forbidden access'})
+      };
+      const result = await paymentCollection.find(query).toArray();
+      res.send(result);
+    });
+
+
+    
+    // payment intern method
+    app.post("/create-payment-intent", async (req, res) => {
+      const { price } = req.body;
+      const amount = parseInt(price * 100);
+      const paymentIntern = await stripe.paymentIntents.create({
+        amount: amount,
+        currency: "usd",
+        payment_method_types: ["card"],
+      });
+      res.send({
+        clientSecret: paymentIntern.client_secret,
+      });
     });
 
     // Send a ping to confirm a successful connection
