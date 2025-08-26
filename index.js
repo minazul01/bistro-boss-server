@@ -25,7 +25,7 @@ const client = new MongoClient(uri, {
 async function run() {
   try {
     // Connect the client to the server	(optional starting in v4.7)
-    await client.connect();
+    // await client.connect();
 
     const userCollection = client.db("bistroDB").collection("user");
     const menuCollection = client.db("bistroDB").collection("menu");
@@ -36,22 +36,25 @@ async function run() {
     // JSON WEB-TOKEN SECRET
     app.post("/jwt", async (req, res) => {
       const user = req.body;
-      const token = jwt.sign(user, process.env.ACCESS_TOKEN_SECRET, {
-        expiresIn: "1h",
-      });
+      const token = jwt.sign(
+        { email: user.email }, // শুধু email encode করা
+        process.env.ACCESS_TOKEN_SECRET,
+        { expiresIn: "1h" }
+      );
       res.send({ token });
     });
 
     // middleware
     const verifyToken = (req, res, next) => {
+        
       if (!req.headers.authorization) {
-        return res.status(404).send({ message: "forbidden access" });
+        return res.status(401).send({ message: "Unauthorized" });
       }
       const token = req.headers.authorization.split(" ")[1];
 
       jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, decoded) => {
         if (err) {
-          return res.status(404).send({ message: "forbidden access" });
+          return res.status(403).send({ message: "Forbidden" });
         }
         req.decoded = decoded;
         next();
@@ -210,9 +213,8 @@ async function run() {
     });
 
     // payment details added database
- 
 
-    app.post("/payments", async (req, res) => {
+    app.post("/payments", verifyToken, async (req, res) => {
       const payment = req.body;
 
       // Insert payment info
@@ -233,30 +235,27 @@ async function run() {
             _id: { $in: objectIds },
           });
 
-          console.log("paymentInfo", payment);
           res.send({ result, deleteResult });
         } catch (err) {
           console.error("Error converting cardIds to ObjectIds:", err);
           res.status(400).send({ message: "Invalid cardIds format" });
         }
       } else {
-        console.log("paymentInfo", payment);
+        // console.log("paymentInfo", payment);
         res.send(result);
       }
     });
 
     // payment history get
-    app.get('/payments/:email', verifyToken, async(req, res) => {
-      const query = {email: req.params.email};
-      if(req.params.email !== req.decoded.email){
-        return res.status(403).send({message: 'forbidden access'})
-      };
+    app.get("/payments/:email", verifyToken, async (req, res) => {
+      const query = { email: req.params.email };
+      if (req.params.email !== req.decoded.email) {
+        return res.status(403).send({ message: "forbidden access" });
+      }
       const result = await paymentCollection.find(query).toArray();
       res.send(result);
     });
 
-
-    
     // payment intern method
     app.post("/create-payment-intent", async (req, res) => {
       const { price } = req.body;
@@ -271,11 +270,73 @@ async function run() {
       });
     });
 
+    // admin home working all user info,order, product,revenue etc
+    app.get("/admin-info", async (req, res) => {
+      const user = await userCollection.estimatedDocumentCount();
+      const menuItem = await menuCollection.estimatedDocumentCount();
+      const orderItem = await cardCollection.estimatedDocumentCount();
+      // const payment = await paymentCollection.find().toArray();
+      // const total = payment.reduce((total, item) => total + item.price,0);
+      // not best way reduce method all payment revenue because total data load , total data do not load to revenue all show below
+      const result = await paymentCollection
+        ?.aggregate([
+          {
+            $group: {
+              _id: null,
+              totalRevenue: {
+                $sum: "$price",
+              },
+            },
+          },
+        ])
+        .toArray();
+      const revenue = result?.length > 0 ? result[0]?.totalRevenue : 0;
+      res.send({ user, menuItem, orderItem, revenue });
+    });
+
+    // order payment revenue and which item sell how many
+    // using aggregate pipeline
+    app.get("/order", verifyToken, verifyAdmin, async (req, res) => {
+
+      const result = await paymentCollection
+        .aggregate([
+          {
+            $unwind: "$menuIds",
+          },
+          {
+            $addFields: {
+              menuObj: { $toObjectId: "$menuIds" },
+            },
+          },
+          {
+            $lookup: {
+              from: "menu",
+              localField: "menuObj",
+              foreignField: "_id",
+              as: "menuItems",
+            },
+          },
+          {
+            $unwind: "$menuItems",
+          },
+          {
+            $group: {
+              _id: "$menuItems.category",
+              quantity: { $sum: 1 },
+              revenue: { $sum: "$menuItems.price" },
+            },
+          },
+        ])
+        .toArray();
+
+      res.send(result);
+    });
+
     // Send a ping to confirm a successful connection
-    await client.db("admin").command({ ping: 1 });
-    console.log(
-      "Pinged your deployment. You successfully connected to MongoDB!"
-    );
+    // await client.db("admin").command({ ping: 1 });
+    // console.log(
+    //   "Pinged your deployment. You successfully connected to MongoDB!"
+    // );
   } finally {
     // Ensures that the client will close when you finish/error
     // await client.close();
